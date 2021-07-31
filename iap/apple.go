@@ -44,7 +44,7 @@ type InApp struct {
 	OriginalTransactionID string               `json:"original_transaction_id"`
 	TransactionId         string               `json:"transaction_id"` // Different than OriginalTransactionId if the user Auto-renews subscription or restores a purchase.
 	ProductID             string               `json:"product_id"`
-	ExpiresDateMs         string               `json:"expires_date_ms"` // Subscription expiration or renewal date.
+	ExpiresDateMs         string               `json:"expires_date_ms"` // Only returned for Subscription expiration or renewal date.
 	PurchaseDateMs        string               `json:"purchase_date_ms"`
 	CancellationDateMs    string               `json:"cancellation_date_ms"` // canceled a transaction This field is only present for refunded transactions
 	CancellationReason    string               `json:"cancellation_reason"`  // reason for a refunded transaction Possible values: 1, 0

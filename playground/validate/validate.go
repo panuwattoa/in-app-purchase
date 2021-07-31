@@ -78,7 +78,7 @@ type Purchase struct {
 
 type SubscriptionPurchase struct {
 	Purchase
-	AutoRenew   string
+	AutoRenew   bool
 	ExpiresTime time.Time
 }
 
@@ -110,7 +110,7 @@ func NewValidate(sg Storage, applePassword string, gc IAPGoogleConfig) *Validate
 var httpc = &http.Client{Timeout: 5 * time.Second}
 
 func (v *Validate) PurchasesApple(ctx context.Context, userID, receipt string) (*ValidatePurchaseResponse, error) {
-	validation, raw, err := iap.ValidateReceiptApple(ctx, httpc, receipt, v.ApplePassword)
+	validation, raw, err := iap.ValidateReceiptApple(ctx, httpc, receipt, "")
 	if err != nil {
 		return nil, err
 	}
@@ -192,6 +192,132 @@ func (v *Validate) PurchaseGoogle(ctx context.Context, userID string, receipt st
 			environment:   UNKNOWN,
 		},
 	})
+	if err != nil {
+		return nil, err
+	}
+
+	if len(purchases) < 1 {
+		return nil, ErrPurchaseReceiptAlreadySeen
+	}
+
+	validatedPurchases := make([]*ValidatedPurchase, 0, len(purchases))
+	for _, p := range purchases {
+		validatedPurchases = append(validatedPurchases, &ValidatedPurchase{
+			ProductId:        p.productId,
+			TransactionId:    p.transactionId,
+			Store:            p.store,
+			PurchaseTime:     p.purchaseTime.Unix(),
+			CreateTime:       p.createTime.Unix(),
+			UpdateTime:       p.updateTime.Unix(),
+			ProviderResponse: string(raw),
+			Environment:      p.environment,
+		})
+	}
+
+	return &ValidatePurchaseResponse{
+		ValidatedPurchases: validatedPurchases,
+	}, nil
+}
+
+func (v *Validate) PurchaseSubscriptionGoogle(ctx context.Context, userID string, receipt string) (*ValidatePurchaseResponse, error) {
+	g, gReceipt, raw, err := iap.ValidateSubscriptionReceiptGoogle(ctx, httpc, v.GoogleConfig.ClientEmail, v.GoogleConfig.PrivateKey, receipt)
+	if err != nil {
+		return nil, err
+	}
+	purchases, err := v.Storage.StoreSubscriptionPurchases(ctx, []*SubscriptionPurchase{
+		{
+			Purchase: Purchase{
+				userID:        userID,
+				store:         GOOGLE_PLAY_STORE,
+				productId:     gReceipt.ProductID,
+				transactionId: gReceipt.PurchaseToken,
+				rawRequest:    receipt,
+				rawResponse:   string(raw),
+				purchaseTime:  parseMillisecondUnixTimestamp(int(gReceipt.PurchaseTime)),
+				environment:   UNKNOWN,
+			},
+			AutoRenew:   g.AutoRenewing,
+			ExpiresTime: parseMillisecondUnixTimestamp(int(g.ExpirySubscriptionTimeMillis)),
+		},
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	if len(purchases) < 1 {
+		return nil, ErrPurchaseReceiptAlreadySeen
+	}
+
+	validatedPurchases := make([]*ValidatedPurchase, 0, len(purchases))
+	for _, p := range purchases {
+		validatedPurchases = append(validatedPurchases, &ValidatedPurchase{
+			ProductId:        p.productId,
+			TransactionId:    p.transactionId,
+			Store:            p.store,
+			PurchaseTime:     p.purchaseTime.Unix(),
+			CreateTime:       p.createTime.Unix(),
+			UpdateTime:       p.updateTime.Unix(),
+			ProviderResponse: string(raw),
+			Environment:      p.environment,
+		})
+	}
+
+	return &ValidatePurchaseResponse{
+		ValidatedPurchases: validatedPurchases,
+	}, nil
+}
+
+func (v *Validate) PurchasesSubscriptionApple(ctx context.Context, userID, receipt string) (*ValidatePurchaseResponse, error) {
+	validation, raw, err := iap.ValidateReceiptApple(ctx, httpc, receipt, v.ApplePassword)
+	if err != nil {
+		return nil, err
+	}
+
+	if validation.Status != iap.AppleReceiptIsValid {
+		// TODO: log to DB
+		if validation.IsRetryable == true {
+			return nil, ErrUnavailableTryAgain
+		}
+		return nil, ErrFailedPrecondition
+	}
+
+	env := PRODUCTION
+	if validation.Environment == iap.AppleSandboxEnv {
+		env = SANDBOX
+	}
+
+	storagePurchases := make([]*SubscriptionPurchase, 0, len(validation.Receipt.InApp))
+	for _, purchase := range validation.Receipt.InApp {
+		pt, err := strconv.Atoi(purchase.PurchaseDateMs)
+		if err != nil {
+			return nil, err
+		}
+
+		exp, err := strconv.Atoi(purchase.ExpiresDateMs)
+		if err != nil {
+			return nil, err
+		}
+		isAutoRenew := false
+		if len(purchase.PendingRenewalInfo) > 0 {
+			isAutoRenew = purchase.PendingRenewalInfo[0].AutoRenewStatus == "1"
+		}
+		storagePurchases = append(storagePurchases, &SubscriptionPurchase{
+			Purchase: Purchase{
+				userID:        userID,
+				store:         APPLE_APP_STORE,
+				productId:     purchase.ProductID,
+				transactionId: purchase.TransactionId,
+				rawResponse:   string(raw),
+				rawRequest:    receipt,
+				purchaseTime:  parseMillisecondUnixTimestamp(pt),
+				environment:   env,
+			},
+			AutoRenew:   isAutoRenew,
+			ExpiresTime: parseMillisecondUnixTimestamp(exp),
+		})
+	}
+
+	purchases, err := v.Storage.StoreSubscriptionPurchases(ctx, storagePurchases)
 	if err != nil {
 		return nil, err
 	}
